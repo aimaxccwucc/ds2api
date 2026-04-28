@@ -217,6 +217,9 @@ func decodeOpenAIInlineFileBlock(block map[string]any) (inlineDecodedFile, bool,
 			ReplacementType: "input_image",
 		}, true, nil
 	}
+	if hasUnsupportedRemoteImageURL(block, blockType) {
+		return inlineDecodedFile{}, true, fmt.Errorf("remote image URLs are not supported; upload the image with /v1/files or send it as a data URL")
+	}
 	if raw, matched := extractInlineFilePayload(block, blockType); matched {
 		data, contentType, err := decodeInlinePayload(raw, contentTypeFromMap(block))
 		if err != nil {
@@ -248,6 +251,36 @@ func extractInlineImageDataURL(block map[string]any) (string, bool) {
 		return raw, true
 	}
 	return "", false
+}
+
+func hasUnsupportedRemoteImageURL(block map[string]any, blockType string) bool {
+	if block == nil {
+		return false
+	}
+	if strings.TrimSpace(shared.AsString(block["file_id"])) != "" {
+		return false
+	}
+	blockType = strings.ToLower(strings.TrimSpace(blockType))
+	if blockType != "image_url" && blockType != "input_image" && !strings.Contains(blockType, "image") {
+		return false
+	}
+	if remoteURLValue(block["image_url"]) {
+		return true
+	}
+	return remoteURLValue(block["url"])
+}
+
+func remoteURLValue(raw any) bool {
+	switch x := raw.(type) {
+	case string:
+		v := strings.TrimSpace(x)
+		return v != "" && !isDataURL(v)
+	case map[string]any:
+		v := strings.TrimSpace(shared.AsString(x["url"]))
+		return v != "" && !isDataURL(v)
+	default:
+		return false
+	}
 }
 
 func extractInlineFilePayload(block map[string]any, blockType string) (string, bool) {

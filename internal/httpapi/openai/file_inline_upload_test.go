@@ -216,6 +216,54 @@ func TestChatCompletionsInlineUploadFailureReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRemoteImageURLReturnsBadRequest(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{Store: mockOpenAIConfig{wideInput: true}, Auth: streamStatusAuthStub{}, DS: ds}
+	reqBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletions(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "remote image URLs are not supported") {
+		t.Fatalf("expected remote image error message, body=%s", rec.Body.String())
+	}
+	if len(ds.uploadCalls) != 0 || ds.completionReq != nil {
+		t.Fatalf("did not expect upload or completion for unsupported remote image")
+	}
+}
+
+func TestPreprocessInlineFileInputsAllowsImageFileIDReference(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{DS: ds}
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_image", "file_id": "file-existing"},
+				},
+			},
+		},
+	}
+
+	if err := h.preprocessInlineFileInputs(context.Background(), &auth.RequestAuth{DeepSeekToken: "token"}, req); err != nil {
+		t.Fatalf("preprocess failed: %v", err)
+	}
+	if len(ds.uploadCalls) != 0 {
+		t.Fatalf("did not expect upload for existing file_id")
+	}
+	refIDs, _ := req["ref_file_ids"].([]any)
+	if len(refIDs) != 1 || refIDs[0] != "file-existing" {
+		t.Fatalf("unexpected ref_file_ids: %#v", req["ref_file_ids"])
+	}
+}
+
 func TestResponsesInlineUploadFailureReturnsInternalServerError(t *testing.T) {
 	ds := &inlineUploadDSStub{uploadErr: errors.New("boom")}
 	h := &openAITestSurface{Store: mockOpenAIConfig{wideInput: true}, Auth: streamStatusAuthStub{}, DS: ds}

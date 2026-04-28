@@ -239,6 +239,7 @@ OpenAI 文件相关实现：
 - “systemprompt 文件”通常只在 `ref_file_ids` 里
 - `/v1/files` 上传拿到 DeepSeek `file_id` 后会直接返回当前文件状态；如果上游仍是 `PENDING`，调用方可以通过 `GET /v1/files/{file_id}` 查询状态，等 ready 后再引用该 `file_id`。
 - inline/base64/data URL 文件属于当前 completion 的即时依赖，必须等上游文件可用后才会进入 `ref_file_ids`；如果等待后仍未 ready，接口返回 OpenAI 兼容 409，不会继续把未 ready 的 `file_id` 传给 DeepSeek completion。
+- 远程 `image_url` 不会被 DeepSeek completion 直接拉取；如果请求里出现非 data URL 的图片地址且没有 `file_id`，接口返回 OpenAI 兼容 400，要求调用方先通过 `/v1/files` 上传或改用 data URL，避免图片被静默丢弃后模型在未看到图片的情况下作答。
 
 除非调用方自己把文件内容展开后再塞进 system/developer 文本，否则文件内容不会自动出现在 prompt 正文。
 
