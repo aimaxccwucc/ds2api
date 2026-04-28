@@ -65,6 +65,10 @@ func (c *Client) waitForUploadedFile(ctx context.Context, a *auth.RequestAuth, r
 	return fmt.Errorf("file %s did not become ready: %w", result.ID, lastErr)
 }
 
+func (c *Client) FetchUploadedFile(ctx context.Context, a *auth.RequestAuth, fileID string) (*UploadFileResult, error) {
+	return c.fetchUploadedFile(ctx, a, fileID)
+}
+
 func (c *Client) fetchUploadedFile(ctx context.Context, a *auth.RequestAuth, fileID string) (*UploadFileResult, error) {
 	fileID = strings.TrimSpace(fileID)
 	if fileID == "" {

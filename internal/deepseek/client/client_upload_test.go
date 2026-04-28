@@ -215,3 +215,47 @@ func TestUploadFileWaitsForProcessedFetchFiles(t *testing.T) {
 		t.Fatalf("expected 4 requests, got %d", call)
 	}
 }
+
+func TestUploadFileCanSkipReadinessPolling(t *testing.T) {
+	oldSleep := fileReadySleep
+	fileReadySleep = func(time.Duration) {}
+	defer func() { fileReadySleep = oldSleep }()
+
+	challengeHash := powpkg.DeepSeekHashV1([]byte(powpkg.BuildPrefix("salt", 1712345678) + "42"))
+	powResponse := `{"code":0,"msg":"ok","data":{"biz_code":0,"biz_data":{"challenge":{"algorithm":"DeepSeekHashV1","challenge":"` + hex.EncodeToString(challengeHash[:]) + `","salt":"salt","expire_at":1712345678,"difficulty":1000,"signature":"sig","target_path":"` + dsprotocol.DeepSeekUploadTargetPath + `"}}}}`
+	uploadResponse := `{"code":0,"msg":"ok","data":{"biz_code":0,"biz_data":{"id":"file_img","file_name":"image.png","file_size":68,"status":"PENDING","is_image":true}}}`
+
+	var call int
+	client := &Client{
+		regular: doerFunc(func(req *http.Request) (*http.Response, error) {
+			call++
+			switch call {
+			case 1:
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(powResponse)), Request: req}, nil
+			case 2:
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(uploadResponse)), Request: req}, nil
+			default:
+				t.Fatalf("unexpected request count %d", call)
+				return nil, nil
+			}
+		}),
+		fallback:   &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) { return nil, nil })},
+		maxRetries: 1,
+	}
+
+	result, err := client.UploadFile(context.Background(), &auth.RequestAuth{DeepSeekToken: "token", TriedAccounts: map[string]bool{}}, UploadFileRequest{
+		Filename:      "image.png",
+		ContentType:   "image/png",
+		Data:          []byte("image-data"),
+		SkipReadyWait: true,
+	}, 1)
+	if err != nil {
+		t.Fatalf("UploadFile error: %v", err)
+	}
+	if result.ID != "file_img" {
+		t.Fatalf("expected uploaded image file id file_img, got %#v", result)
+	}
+	if call != 2 {
+		t.Fatalf("expected upload to skip readiness polling, got %d requests", call)
+	}
+}

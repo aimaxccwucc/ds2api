@@ -97,6 +97,7 @@ func NewApp() (*App, error) {
 	r.Post("/v1/responses", responsesHandler.Responses)
 	r.Get("/v1/responses/{response_id}", responsesHandler.GetResponseByID)
 	r.Post("/v1/files", filesHandler.UploadFile)
+	r.Get("/v1/files/{file_id}", filesHandler.GetFile)
 	r.Post("/v1/embeddings", embeddingsHandler.Embeddings)
 	claude.RegisterRoutes(r, claudeHandler)
 	gemini.RegisterRoutes(r, geminiHandler)

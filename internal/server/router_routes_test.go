@@ -36,6 +36,7 @@ func TestAPIRoutesRemainRegistered(t *testing.T) {
 		"POST /v1/responses",
 		"GET /v1/responses/{response_id}",
 		"POST /v1/files",
+		"GET /v1/files/{file_id}",
 		"POST /v1/embeddings",
 		"GET /anthropic/v1/models",
 		"POST /anthropic/v1/messages",

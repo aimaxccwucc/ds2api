@@ -139,6 +139,9 @@ func (s *inlineUploadState) tryUploadBlock(block map[string]any) (map[string]any
 	}
 	fileID, err := s.uploadInlineFile(decoded)
 	if err != nil {
+		if _, ok := err.(*inlineFileUploadError); ok {
+			return nil, true, err
+		}
 		return nil, true, &inlineFileUploadError{status: http.StatusInternalServerError, message: "Failed to upload inline file.", err: err}
 	}
 	s.uploadCount++
@@ -171,6 +174,9 @@ func (s *inlineUploadState) uploadInlineFile(file inlineDecodedFile) (string, er
 		Data:        file.Data,
 	}, 3)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "did not become ready") || strings.Contains(strings.ToLower(err.Error()), "waiting for file") {
+			return "", &inlineFileUploadError{status: http.StatusConflict, message: "Uploaded inline file is not ready yet. Upload it with /v1/files first and retry with the returned file_id after it is ready.", err: err}
+		}
 		return "", err
 	}
 	fileID := strings.TrimSpace(result.ID)

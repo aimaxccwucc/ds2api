@@ -20,10 +20,11 @@ import (
 )
 
 type UploadFileRequest struct {
-	Filename    string
-	ContentType string
-	Purpose     string
-	Data        []byte
+	Filename      string
+	ContentType   string
+	Purpose       string
+	Data          []byte
+	SkipReadyWait bool
 }
 
 type UploadFileResult struct {
@@ -128,6 +129,9 @@ func (c *Client) UploadFile(ctx context.Context, a *auth.RequestAuth, req Upload
 			}
 			if result.ID == "" {
 				return nil, errors.New("upload file succeeded without file id")
+			}
+			if req.SkipReadyWait {
+				return result, nil
 			}
 			if err := c.waitForUploadedFile(ctx, a, result); err != nil {
 				return nil, err

@@ -237,6 +237,28 @@ func TestResponsesInlineUploadFailureReturnsInternalServerError(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsInlineUploadNotReadyReturnsConflict(t *testing.T) {
+	ds := &inlineUploadDSStub{uploadErr: errors.New("file file-img did not become ready: status=PENDING")}
+	h := &openAITestSurface{Store: mockOpenAIConfig{wideInput: true}, Auth: streamStatusAuthStub{}, DS: ds}
+	reqBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJDRA=="}}]}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ChatCompletions(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not ready") {
+		t.Fatalf("expected not-ready error message, body=%s", rec.Body.String())
+	}
+	if ds.completionReq != nil {
+		t.Fatalf("did not expect completion call when inline file is not ready")
+	}
+}
+
 func TestVercelPrepareUploadsInlineFilesBeforeLeasePayload(t *testing.T) {
 	t.Setenv("VERCEL", "1")
 	t.Setenv("DS2API_VERCEL_INTERNAL_SECRET", "stream-secret")

@@ -2,15 +2,14 @@ services:
   ds2api:
     build:
       context: .
-      extra_hosts:
-        - "host.docker.internal:host-gateway"
+      network: host
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
-        HTTP_PROXY: ${BUILD_HTTP_PROXY:-http://host.docker.internal:7897}
-        HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-http://host.docker.internal:7897}
+        HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+        HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
         NO_PROXY: ${BUILD_NO_PROXY:-localhost,127.0.0.1,ds2api,axonhub}
-        http_proxy: ${BUILD_http_proxy:-http://host.docker.internal:7897}
-        https_proxy: ${BUILD_https_proxy:-http://host.docker.internal:7897}
+        http_proxy: ${BUILD_http_proxy:-}
+        https_proxy: ${BUILD_https_proxy:-}
         no_proxy: ${BUILD_no_proxy:-localhost,127.0.0.1,ds2api,axonhub}
     image: ghcr.io/cjackhwang/ds2api:latest
     container_name: ds2api

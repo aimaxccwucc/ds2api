@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -41,9 +42,11 @@ func (managedFilesAuthStub) DetermineCaller(_ *http.Request) (*auth.RequestAuth,
 func (managedFilesAuthStub) Release(_ *auth.RequestAuth) {}
 
 type filesRouteDSStub struct {
-	lastReq dsclient.UploadFileRequest
-	upload  *dsclient.UploadFileResult
-	err     error
+	lastReq       dsclient.UploadFileRequest
+	lastFetchAuth *auth.RequestAuth
+	upload        *dsclient.UploadFileResult
+	fetched       *dsclient.UploadFileResult
+	err           error
 }
 
 func (m *filesRouteDSStub) CreateSession(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
@@ -63,6 +66,53 @@ func (m *filesRouteDSStub) UploadFile(_ context.Context, _ *auth.RequestAuth, re
 		return m.upload, nil
 	}
 	return &dsclient.UploadFileResult{ID: "file-123", Filename: req.Filename, Bytes: int64(len(req.Data)), Purpose: req.Purpose, Status: "uploaded"}, nil
+}
+
+func (m *filesRouteDSStub) FetchUploadedFile(_ context.Context, a *auth.RequestAuth, fileID string) (*dsclient.UploadFileResult, error) {
+	m.lastFetchAuth = a
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.fetched != nil {
+		return m.fetched, nil
+	}
+	return &dsclient.UploadFileResult{ID: fileID, Filename: "notes.txt", Bytes: 11, Purpose: "assistants", Status: "processed"}, nil
+}
+
+type rotatingManagedFilesAuthStub struct {
+	accounts []string
+	calls    int
+	released []string
+}
+
+func (m *rotatingManagedFilesAuthStub) Determine(req *http.Request) (*auth.RequestAuth, error) {
+	target := strings.TrimSpace(req.Header.Get("X-Ds2-Target-Account"))
+	accountID := target
+	if accountID == "" {
+		if m.calls < len(m.accounts) {
+			accountID = m.accounts[m.calls]
+		} else if len(m.accounts) > 0 {
+			accountID = m.accounts[len(m.accounts)-1]
+		}
+	}
+	m.calls++
+	return &auth.RequestAuth{
+		UseConfigToken: true,
+		DeepSeekToken:  "managed-token",
+		CallerID:       "caller:test",
+		AccountID:      accountID,
+		TriedAccounts:  map[string]bool{},
+	}, nil
+}
+
+func (m *rotatingManagedFilesAuthStub) DetermineCaller(req *http.Request) (*auth.RequestAuth, error) {
+	return m.Determine(req)
+}
+
+func (m *rotatingManagedFilesAuthStub) Release(a *auth.RequestAuth) {
+	if a != nil {
+		m.released = append(m.released, a.AccountID)
+	}
 }
 
 func (m *filesRouteDSStub) CallCompletion(_ context.Context, _ *auth.RequestAuth, _ map[string]any, _ string, _ int) (*http.Response, error) {
@@ -136,6 +186,80 @@ func TestFilesRouteUploadSuccess(t *testing.T) {
 	}
 	if out["filename"] != "notes.txt" {
 		t.Fatalf("expected filename notes.txt, got %#v", out["filename"])
+	}
+}
+
+func TestFilesRouteUploadSkipsReadyWait(t *testing.T) {
+	ds := &filesRouteDSStub{}
+	h := &openAITestSurface{Store: mockOpenAIConfig{wideInput: true}, Auth: streamStatusAuthStub{}, DS: ds}
+	r := chi.NewRouter()
+	registerOpenAITestRoutes(r, h)
+
+	req := newMultipartUploadRequest(t, "vision", "image.png", []byte("image-data"))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !ds.lastReq.SkipReadyWait {
+		t.Fatalf("expected /v1/files upload to skip readiness polling")
+	}
+}
+
+func TestFilesRouteGetFileStatusSuccess(t *testing.T) {
+	ds := &filesRouteDSStub{fetched: &dsclient.UploadFileResult{ID: "file-123", Filename: "image.png", Bytes: 68, Purpose: "vision", Status: "PENDING"}}
+	h := &openAITestSurface{Store: mockOpenAIConfig{wideInput: true}, Auth: streamStatusAuthStub{}, DS: ds}
+	r := chi.NewRouter()
+	registerOpenAITestRoutes(r, h)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/files/file-123", nil)
+	req.Header.Set("Authorization", "Bearer direct-token")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response failed: %v body=%s", err, rec.Body.String())
+	}
+	if out["id"] != "file-123" || out["status"] != "PENDING" {
+		t.Fatalf("unexpected file object: %#v", out)
+	}
+}
+
+func TestFilesRouteGetFileStatusReusesUploadedAccount(t *testing.T) {
+	ds := &filesRouteDSStub{
+		upload:  &dsclient.UploadFileResult{ID: "file-123", Filename: "image.png", Bytes: 68, Purpose: "vision", Status: "PENDING"},
+		fetched: &dsclient.UploadFileResult{ID: "file-123", Filename: "image.png", Bytes: 68, Purpose: "vision", Status: "SUCCESS"},
+	}
+	authStub := &rotatingManagedFilesAuthStub{accounts: []string{"acct-upload", "acct-other"}}
+	h := &openAITestSurface{Store: mockOpenAIConfig{wideInput: true}, Auth: authStub, DS: ds}
+	r := chi.NewRouter()
+	registerOpenAITestRoutes(r, h)
+
+	uploadReq := newMultipartUploadRequest(t, "vision", "image.png", []byte("image-data"))
+	uploadRec := httptest.NewRecorder()
+	r.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusOK {
+		t.Fatalf("expected upload 200, got %d body=%s", uploadRec.Code, uploadRec.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/files/file-123", nil)
+	getReq.Header.Set("Authorization", "Bearer managed-key")
+	getRec := httptest.NewRecorder()
+	r.ServeHTTP(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d body=%s", getRec.Code, getRec.Body.String())
+	}
+	if ds.lastFetchAuth == nil || ds.lastFetchAuth.AccountID != "acct-upload" {
+		t.Fatalf("expected file lookup to reuse uploaded account, got %#v", ds.lastFetchAuth)
+	}
+	if len(authStub.released) != 3 {
+		t.Fatalf("expected release for upload, initial get account, and target get account; got %#v", authStub.released)
 	}
 }
 
