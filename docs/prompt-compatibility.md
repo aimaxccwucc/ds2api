@@ -242,9 +242,9 @@ OpenAI 文件相关实现：
 
 兼容层现在只保留 `current_input_file` 这一种拆分方式；旧的 `history_split` 已废弃，只保留为兼容旧配置的字段，不再参与请求处理。
 
-- `current_input_file` 默认开启；它用于把“完整上下文”合并进隐藏上下文文件。当最新 user turn 的纯文本长度达到 `current_input_file.min_chars`（默认 `0`）时，兼容层会上传一个文件名为 `IGNORE.txt` 的上下文文件，并在 live prompt 中只保留一个中性的 user 消息要求模型直接回答最新请求，不再暴露文件名或要求模型读取本地文件。
-- 如果 `current_input_file.enabled=false`，请求会直接透传，不上传任何拆分上下文文件。
-- 旧的 `history_split.enabled` / `history_split.trigger_after_turns` 会被读取进配置对象以保持兼容，但不会触发拆分上传，也不会影响 `current_input_file` 的默认开启。
+- `current_input_file` 默认关闭；它是可选的独立拆分策略，用于把“完整上下文”合并进隐藏上下文文件。显式配置 `current_input_file.enabled=true` 后，当最新 user turn 的纯文本长度达到 `current_input_file.min_chars`（默认 `0`）时，兼容层会上传一个文件名为 `IGNORE.txt` 的上下文文件，并在 live prompt 中只保留一个中性的 user 消息要求模型直接回答最新请求，不再暴露文件名或要求模型读取本地文件。
+- 如果保持 `current_input_file.enabled=false` 或不配置该字段，请求会直接透传，不上传任何拆分上下文文件。
+- 旧的 `history_split.enabled` / `history_split.trigger_after_turns` 会被读取进配置对象以保持兼容，但不会触发拆分上传，也不会影响 `current_input_file` 的默认关闭。
 
 相关实现：
 

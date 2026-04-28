@@ -51,7 +51,7 @@
     "store_ttl_seconds": 900
   },
   "current_input_file": {
-    "enabled": true,
+    "enabled": false,
     "min_chars": 0
   },
   "thinking_injection": {

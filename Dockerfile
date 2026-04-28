@@ -1,5 +1,12 @@
 FROM node:24 AS webui-builder
 
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
 WORKDIR /app/webui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci
@@ -12,6 +19,16 @@ WORKDIR /app
 ARG TARGETOS
 ARG TARGETARCH
 ARG BUILD_VERSION
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
@@ -24,11 +41,11 @@ RUN set -eux; \
 
 FROM busybox:1.36.1-musl AS busybox-tools
 
+FROM ghcr.io/cjackhwang/ds2api:latest AS upstream-runtime
+
 FROM debian:bookworm-slim AS runtime-base
 WORKDIR /app
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+COPY --from=upstream-runtime /etc/ssl/certs /etc/ssl/certs
 COPY --from=busybox-tools /bin/busybox /usr/local/bin/busybox
 EXPOSE 5001
 CMD ["/usr/local/bin/ds2api"]

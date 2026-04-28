@@ -175,7 +175,7 @@ func (s *Store) CurrentInputFileEnabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.cfg.CurrentInputFile.Enabled == nil {
-		return true
+		return false
 	}
 	return *s.cfg.CurrentInputFile.Enabled
 }

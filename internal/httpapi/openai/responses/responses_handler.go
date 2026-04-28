@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"context"
 	"ds2api/internal/toolcall"
 	"encoding/json"
 	"io"
@@ -57,7 +58,11 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, status, detail)
 		return
 	}
-	defer h.Auth.Release(a)
+	var sessionID string
+	defer func() {
+		h.autoDeleteRemoteSession(r.Context(), a, sessionID)
+		h.Auth.Release(a)
+	}()
 	r = r.WithContext(auth.WithAuth(r.Context(), a))
 	owner := responseStoreOwner(a)
 	if owner == "" {
@@ -92,7 +97,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
+	sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
 	if err != nil {
 		if a.UseConfigToken {
 			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
@@ -119,6 +124,39 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolChoice, traceID)
+}
+
+func (h *Handler) autoDeleteRemoteSession(ctx context.Context, a *auth.RequestAuth, sessionID string) {
+	mode := h.Store.AutoDeleteMode()
+	if mode == "none" || a.DeepSeekToken == "" {
+		return
+	}
+
+	deleteBaseCtx := context.WithoutCancel(ctx)
+	deleteCtx, cancel := context.WithTimeout(deleteBaseCtx, 10*time.Second)
+	defer cancel()
+
+	switch mode {
+	case "single":
+		if sessionID == "" {
+			config.Logger.Warn("[auto_delete_sessions] skipped single-session delete because session_id is empty", "account", a.AccountID, "surface", "responses")
+			return
+		}
+		_, err := h.DS.DeleteSessionForToken(deleteCtx, a.DeepSeekToken, sessionID)
+		if err != nil {
+			config.Logger.Warn("[auto_delete_sessions] failed", "account", a.AccountID, "mode", mode, "session_id", sessionID, "surface", "responses", "error", err)
+			return
+		}
+		config.Logger.Debug("[auto_delete_sessions] success", "account", a.AccountID, "mode", mode, "session_id", sessionID, "surface", "responses")
+	case "all":
+		if err := h.DS.DeleteAllSessionsForToken(deleteCtx, a.DeepSeekToken); err != nil {
+			config.Logger.Warn("[auto_delete_sessions] failed", "account", a.AccountID, "mode", mode, "surface", "responses", "error", err)
+			return
+		}
+		config.Logger.Debug("[auto_delete_sessions] success", "account", a.AccountID, "mode", mode, "surface", "responses")
+	default:
+		config.Logger.Warn("[auto_delete_sessions] unknown mode", "account", a.AccountID, "mode", mode, "surface", "responses")
+	}
 }
 
 func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolChoice promptcompat.ToolChoicePolicy, traceID string) {

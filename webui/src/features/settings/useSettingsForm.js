@@ -17,7 +17,7 @@ const DEFAULT_FORM = {
     responses: { store_ttl_seconds: 900 },
     embeddings: { provider: '' },
     auto_delete: { mode: 'none' },
-    current_input_file: { enabled: true, min_chars: 0 },
+    current_input_file: { enabled: false, min_chars: 0 },
     thinking_injection: { enabled: true, prompt: '', default_prompt: '' },
     model_aliases_text: '{}',
 }
@@ -51,7 +51,7 @@ function normalizeAutoDeleteMode(raw) {
 }
 
 function fromServerForm(data) {
-    const currentInputFileEnabled = data.current_input_file?.enabled ?? true
+    const currentInputFileEnabled = data.current_input_file?.enabled ?? false
     return {
         admin: { jwt_expire_hours: Number(data.admin?.jwt_expire_hours || 24) },
         runtime: {

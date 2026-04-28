@@ -19,8 +19,8 @@ func TestStoreHistorySplitAccessors(t *testing.T) {
 
 func TestStoreCurrentInputFileAccessors(t *testing.T) {
 	store := &Store{cfg: Config{}}
-	if !store.CurrentInputFileEnabled() {
-		t.Fatal("expected current input file enabled by default")
+	if store.CurrentInputFileEnabled() {
+		t.Fatal("expected current input file disabled by default")
 	}
 	if got := store.CurrentInputFileMinChars(); got != 0 {
 		t.Fatalf("default current input file min_chars=%d want=0", got)
