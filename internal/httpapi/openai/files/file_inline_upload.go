@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -36,6 +37,25 @@ func (e *inlineFileUploadError) Error() string {
 		return e.err.Error()
 	}
 	return "inline file processing failed"
+}
+
+func (e *inlineFileUploadError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+type referencedFileStatusError struct {
+	fileID string
+	status string
+}
+
+func (e *referencedFileStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("file %s is not ready: status=%s", strings.TrimSpace(e.fileID), strings.TrimSpace(e.status))
 }
 
 type inlineUploadState struct {
@@ -73,6 +93,9 @@ func (h *Handler) PreprocessInlineFileInputs(ctx context.Context, a *auth.Reques
 		}
 	}
 	if refIDs := promptcompat.CollectOpenAIRefFileIDs(req); len(refIDs) > 0 {
+		if err := h.validateReferencedFiles(ctx, a, refIDs); err != nil {
+			return err
+		}
 		req["ref_file_ids"] = stringsToAnySlice(refIDs)
 	}
 	return nil
@@ -93,6 +116,57 @@ func WriteInlineFileError(w http.ResponseWriter, err error) {
 		message = "Failed to process file input."
 	}
 	shared.WriteOpenAIError(w, status, message)
+}
+
+func (h *Handler) validateReferencedFiles(ctx context.Context, a *auth.RequestAuth, refIDs []string) error {
+	if h == nil || h.DS == nil || len(refIDs) == 0 {
+		return nil
+	}
+	fetcher, ok := h.DS.(uploadedFileFetcher)
+	if !ok {
+		return nil
+	}
+	for _, fileID := range refIDs {
+		fileID = strings.TrimSpace(fileID)
+		if fileID == "" {
+			continue
+		}
+		result, err := fetcher.FetchUploadedFile(ctx, a, fileID)
+		if err != nil {
+			return &inlineFileUploadError{
+				status:  http.StatusBadGateway,
+				message: "Failed to verify referenced file status.",
+				err:     err,
+			}
+		}
+		if result == nil {
+			return &inlineFileUploadError{
+				status:  http.StatusBadGateway,
+				message: "Failed to verify referenced file status.",
+				err:     fmt.Errorf("file %s returned empty status result", fileID),
+			}
+		}
+		status := strings.TrimSpace(result.Status)
+		if isReferencedFileReadyStatus(status) {
+			if result != nil {
+				h.rememberFileAccount(result)
+			}
+			continue
+		}
+		if isPendingUploadFileStatus(status) {
+			return &inlineFileUploadError{
+				status:  http.StatusConflict,
+				message: "Referenced file is not ready yet. Wait for /v1/files/{file_id} to return a ready status before retrying.",
+				err:     &referencedFileStatusError{fileID: fileID, status: status},
+			}
+		}
+		return &inlineFileUploadError{
+			status:  http.StatusBadRequest,
+			message: "Referenced file is not usable. Re-upload the file and wait for it to become ready before retrying.",
+			err:     &referencedFileStatusError{fileID: fileID, status: status},
+		}
+	}
+	return nil
 }
 
 func (s *inlineUploadState) walk(raw any) (any, error) {
@@ -174,7 +248,11 @@ func (s *inlineUploadState) uploadInlineFile(file inlineDecodedFile) (string, er
 		Data:        file.Data,
 	}, 3)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "did not become ready") || strings.Contains(strings.ToLower(err.Error()), "waiting for file") {
+		var statusErr *referencedFileStatusError
+		if errors.As(err, &statusErr) || strings.Contains(strings.ToLower(err.Error()), "did not become ready") || strings.Contains(strings.ToLower(err.Error()), "waiting for file") {
+			if statusErr != nil && !isPendingUploadFileStatus(statusErr.status) {
+				return "", &inlineFileUploadError{status: http.StatusBadRequest, message: "Uploaded inline file is not usable. Re-upload it and wait for it to become ready before retrying.", err: err}
+			}
 			return "", &inlineFileUploadError{status: http.StatusConflict, message: "Uploaded inline file is not ready yet. Upload it with /v1/files first and retry with the returned file_id after it is ready.", err: err}
 		}
 		return "", err
@@ -185,6 +263,24 @@ func (s *inlineUploadState) uploadInlineFile(file inlineDecodedFile) (string, er
 	}
 	s.uploadedByID[cacheKey] = fileID
 	return fileID, nil
+}
+
+func isPendingUploadFileStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "uploaded", "pending", "processing", "parsing", "queued", "in_progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func isReferencedFileReadyStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "processed", "ready", "done", "available", "success", "completed", "finished":
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeOpenAIInlineFileBlock(block map[string]any) (inlineDecodedFile, bool, error) {

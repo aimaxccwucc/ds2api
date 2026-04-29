@@ -13,6 +13,7 @@ import (
 
 	"ds2api/internal/auth"
 	dsclient "ds2api/internal/deepseek/client"
+	openaifiles "ds2api/internal/httpapi/openai/files"
 )
 
 type inlineUploadDSStub struct {
@@ -21,6 +22,8 @@ type inlineUploadDSStub struct {
 	completionReq  map[string]any
 	createSession  string
 	uploadErr      error
+	fetchResult    *dsclient.UploadFileResult
+	fetchErr       error
 	completionResp *http.Response
 }
 
@@ -48,6 +51,16 @@ func (m *inlineUploadDSStub) UploadFile(ctx context.Context, _ *auth.RequestAuth
 		Status:   "uploaded",
 		Purpose:  req.Purpose,
 	}, nil
+}
+
+func (m *inlineUploadDSStub) FetchUploadedFile(_ context.Context, _ *auth.RequestAuth, _ string) (*dsclient.UploadFileResult, error) {
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
+	if m.fetchResult != nil {
+		return m.fetchResult, nil
+	}
+	return &dsclient.UploadFileResult{ID: "file-existing", Status: "SUCCESS"}, nil
 }
 
 func (m *inlineUploadDSStub) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
@@ -261,6 +274,62 @@ func TestPreprocessInlineFileInputsAllowsImageFileIDReference(t *testing.T) {
 	refIDs, _ := req["ref_file_ids"].([]any)
 	if len(refIDs) != 1 || refIDs[0] != "file-existing" {
 		t.Fatalf("unexpected ref_file_ids: %#v", req["ref_file_ids"])
+	}
+}
+
+func TestPreprocessInlineFileInputsReferencedFileNotReadyReturnsConflict(t *testing.T) {
+	ds := &inlineUploadDSStub{fetchResult: &dsclient.UploadFileResult{ID: "file-existing", Status: "PARSING"}}
+	h := &openAITestSurface{DS: ds}
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_image", "file_id": "file-existing"},
+				},
+			},
+		},
+	}
+
+	err := h.preprocessInlineFileInputs(context.Background(), &auth.RequestAuth{DeepSeekToken: "token"}, req)
+	if err == nil {
+		t.Fatal("expected not-ready error")
+	}
+	rec := httptest.NewRecorder()
+	openaifiles.WriteInlineFileError(rec, err)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not ready") {
+		t.Fatalf("expected not-ready message, body=%s", rec.Body.String())
+	}
+}
+
+func TestPreprocessInlineFileInputsReferencedFileFailureReturnsBadRequest(t *testing.T) {
+	ds := &inlineUploadDSStub{fetchResult: &dsclient.UploadFileResult{ID: "file-existing", Status: "CONTENT_EMPTY"}}
+	h := &openAITestSurface{DS: ds}
+	req := map[string]any{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_image", "file_id": "file-existing"},
+				},
+			},
+		},
+	}
+
+	err := h.preprocessInlineFileInputs(context.Background(), &auth.RequestAuth{DeepSeekToken: "token"}, req)
+	if err == nil {
+		t.Fatal("expected unusable-file error")
+	}
+	rec := httptest.NewRecorder()
+	openaifiles.WriteInlineFileError(rec, err)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not usable") {
+		t.Fatalf("expected unusable-file message, body=%s", rec.Body.String())
 	}
 }
 
